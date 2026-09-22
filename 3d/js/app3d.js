@@ -154,7 +154,10 @@
   const btnModeWasmAgent = document.getElementById('btn-mode-wasm-agent');
   let agentSocket = null;
   let isAgentSocketConnected = false;
-  let agentPendingActionPromise = null;
+  let isAgentInferring = false;
+  let agentRequestId = 0;
+  const agentPendingPromises = new Map();
+  let consecutiveAgentFailures = 0;
   let usePythonAgent = true;
 
   // Model Selection Modal Elements
@@ -923,9 +926,13 @@
       agentSocket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.type === 'action' && agentPendingActionPromise) {
-            agentPendingActionPromise.resolve(data);
-            agentPendingActionPromise = null;
+          if (data.type === 'action') {
+            const reqId = data.reqId;
+            if (agentPendingPromises.has(reqId)) {
+              const resolve = agentPendingPromises.get(reqId);
+              agentPendingPromises.delete(reqId);
+              resolve(data);
+            }
           }
         } catch (e) {
           console.error('[AgentSocket] Message parse error:', e);
@@ -968,21 +975,23 @@
     }
     const b64 = btoa(binary);
 
+    const reqId = ++agentRequestId;
     const payload = {
       type: 'observe',
+      reqId: reqId,
       rgbBase64: b64,
       speed: car ? car.speed : 0.0
     };
 
     return new Promise((resolve) => {
-      agentPendingActionPromise = { resolve };
+      agentPendingPromises.set(reqId, resolve);
       agentSocket.send(JSON.stringify(payload));
       setTimeout(() => {
-        if (agentPendingActionPromise) {
-          agentPendingActionPromise = null;
+        if (agentPendingPromises.has(reqId)) {
+          agentPendingPromises.delete(reqId);
           resolve(null);
         }
-      }, 150);
+      }, 300);
     });
   }
 
@@ -1016,13 +1025,7 @@
       }
 
       closeModelModal();
-      showToast(`🧠 ${displayName} Loaded! AI Driving Activated.`);
-
-      // Automatically engage autonomous driving so the user watching on port 8080 sees the car drive immediately
-      if (!isAutoDrivingActive) {
-        toggleAutoDriving();
-      }
-
+      showToast(`🧠 ${displayName} Loaded!`);
       return true;
     } catch (err) {
       console.warn('Failed to load ONNX model from primary path:', err);
@@ -1453,24 +1456,29 @@
   }
 
   async function autonomousControlStep() {
+    if (isOnnxInferring || isAgentInferring) return;
     const generation = controlGeneration;
-    // Observe -> infer once -> advance exactly 50 ms.
-    // Ensure car mesh & dashcam represent exact physics ground truth for camera snapshot
+
     car.mesh.position.copy(car.position);
     car.mesh.rotation.y = car.heading;
     updateDashcam();
 
     let action = null;
     if (usePythonAgent && isAgentSocketConnected) {
-      const response = await requestPythonAgentAction();
-      if (response) {
-        action = {
-          steering: response.steering,
-          throttle: response.throttle
-        };
-        predictedAction.steering = action.steering;
-        predictedAction.throttle = action.throttle;
-        updateActuationGauges(action.steering, action.throttle);
+      isAgentInferring = true;
+      try {
+        const response = await requestPythonAgentAction();
+        if (response) {
+          action = {
+            steering: response.steering,
+            throttle: response.throttle
+          };
+          predictedAction.steering = action.steering;
+          predictedAction.throttle = action.throttle;
+          updateActuationGauges(action.steering, action.throttle);
+        }
+      } finally {
+        isAgentInferring = false;
       }
     } else if (onnxSession) {
       action = await runOnnxInference(obsCanvas);
@@ -1478,13 +1486,20 @@
 
     if (generation !== controlGeneration || !isAutoDrivingActive || currentMode !== 'autonomous') return;
     if (!action) {
+      consecutiveAgentFailures++;
+      if (consecutiveAgentFailures < 4 && Math.abs(predictedAction.throttle) > 0.01) {
+        // Carry forward previous action smoothly for up to 3 dropped network frames
+        advanceControl(predictedAction);
+        return;
+      }
       if (usePythonAgent && !isAgentSocketConnected) {
         pauseAutoDriving('Waiting for Python Agent (ws://127.0.0.1:8765)...');
       } else {
-        pauseAutoDriving('Inference failed; driving paused');
+        pauseAutoDriving('Inference connection timed out; driving paused');
       }
       return;
     }
+    consecutiveAgentFailures = 0;
     advanceControl(action);
   }
 
@@ -1495,10 +1510,11 @@
     requestAnimationFrame(animate);
     const dt = Math.min(clock.getDelta(), 0.1);
 
-    if (!isOnnxInferring) controlAccumulator += dt;
+    const isBusy = isOnnxInferring || isAgentInferring;
+    if (!isBusy) controlAccumulator += dt;
     const canDriveAuto = (usePythonAgent && isAgentSocketConnected) || (!usePythonAgent && onnxSession);
     if (currentMode === 'autonomous' && isAutoDrivingActive && canDriveAuto && !isEpisodeCompleting) {
-      if (!isOnnxInferring && controlAccumulator >= CONTROL_DT) {
+      if (!isBusy && controlAccumulator >= CONTROL_DT) {
         controlAccumulator = 0;
         autonomousControlStep();
       }

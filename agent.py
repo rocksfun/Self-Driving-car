@@ -206,10 +206,12 @@ async def run_websocket_server(agent: AutonomousAgent, host: str = "127.0.0.1", 
                         step_counter += 1
                         raw_bytes = base64.b64decode(data["rgbBase64"])
                         speed = float(data.get("speed", 0.0))
+                        req_id = data.get("reqId", step_counter)
                         steer, throttle, latency = agent.act(raw_bytes, current_speed=speed)
 
                         response = {
                             "type": "action",
+                            "reqId": req_id,
                             "step": step_counter,
                             "steering": round(steer, 4),
                             "throttle": round(throttle, 4),
