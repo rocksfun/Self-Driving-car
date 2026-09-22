@@ -203,13 +203,7 @@ class Car3D {
 
         if (autoThrottle > 0.05) {
           isGas = true;
-          // Autonomous cruising speed governor (13.5 m/s) matching Oracle training distribution
-          const targetCruiseSpeed = 13.5;
-          if (this.speed < targetCruiseSpeed) {
-            this.speed += this.acceleration * autoThrottle * dt;
-          } else if (this.speed > targetCruiseSpeed + 0.5) {
-            this.speed = Math.max(targetCruiseSpeed, this.speed - activeFriction * dt);
-          }
+          this.speed += this.acceleration * autoThrottle * dt;
         } else if (autoThrottle < -0.05) {
           isBrake = true;
           const brakeAmt = Math.abs(autoThrottle);

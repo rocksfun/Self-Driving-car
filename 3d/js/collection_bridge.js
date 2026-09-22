@@ -297,6 +297,10 @@
 
     function step(action) {
       const events = advance(car, track, action);
+      if (car.mesh) {
+        car.mesh.position.set(car.position.x, car.position.y, car.position.z);
+        car.mesh.rotation.y = car.heading;
+      }
       steps++;
       if (events.collision) collisions++;
       if (events.offroad) offroadSteps++;

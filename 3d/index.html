@@ -140,6 +140,16 @@
       </div>
 
       <div class="autonomous-content">
+        <!-- Agent Backend Toggle: Standalone Python Driver vs Local Browser WASM -->
+        <div class="agent-toggle-bar">
+          <button id="btn-mode-python-agent" class="agent-mode-btn active" title="Use decoupled Python Driver (agent.py)">
+            🐍 Python Agent (agent.py)
+          </button>
+          <button id="btn-mode-wasm-agent" class="agent-mode-btn" title="Use local In-Browser ONNX WASM">
+            ⚡ Browser Model
+          </button>
+        </div>
+
         <!-- Active Model Banner -->
         <div class="model-status-box">
           <div class="model-status-left">
@@ -236,11 +246,20 @@
         <button id="btn-close-modal" class="modal-close-btn">&times;</button>
       </div>
       <div class="modal-body">
+        <div class="model-option" id="opt-load-act">
+          <div class="opt-icon">⚡</div>
+          <div class="opt-info">
+            <div class="opt-title">Action Chunking Policy (10-Step ACT)</div>
+            <div class="opt-desc">K=10 trajectory chunking with zero-jerk temporal ensembling</div>
+          </div>
+          <button class="opt-btn">Load</button>
+        </div>
+
         <div class="model-option" id="opt-load-onnx">
           <div class="opt-icon">🧠</div>
           <div class="opt-info">
-            <div class="opt-title">Vision Transformer (ViT-GRU-ACT)</div>
-            <div class="opt-desc">Trained with Spline Oracle & DAgger (&ge;35% Noise)</div>
+            <div class="opt-title">Baseline Vision CNN (model.onnx)</div>
+            <div class="opt-desc">Single-step feedforward policy with EMA smoothing</div>
           </div>
           <button class="opt-btn">Load</button>
         </div>
@@ -273,6 +292,6 @@
   <script src="js/car3d.js?v=10"></script>
   <script src="js/oracle3d.js?v=3"></script>
   <script src="js/collection_bridge.js?v=2"></script>
-  <script src="js/app3d.js?v=10"></script>
+  <script src="js/app3d.js?v=11"></script>
 </body>
 </html>

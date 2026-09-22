@@ -149,6 +149,14 @@
   const gaugeThrottleBar = document.getElementById('gauge-throttle-bar');
   const gaugeThrottleVal = document.getElementById('gauge-throttle-val');
 
+  // Agent Backend Switcher & WebSocket Bridge
+  const btnModePythonAgent = document.getElementById('btn-mode-python-agent');
+  const btnModeWasmAgent = document.getElementById('btn-mode-wasm-agent');
+  let agentSocket = null;
+  let isAgentSocketConnected = false;
+  let agentPendingActionPromise = null;
+  let usePythonAgent = true;
+
   // Model Selection Modal Elements
   const modelModal = document.getElementById('model-modal');
   const btnCloseModal = document.getElementById('btn-close-modal');
@@ -233,8 +241,11 @@
       window.neuroDrive.reset();
     }
 
-    // 9. Preload ONNX Model in background
-    if (!collectionMode) loadOnnxModel('model.onnx', 'Vision CNN (model.onnx)');
+    // 9. Connect to Standalone Python Agent (agent.py) & Preload Local Model Fallback
+    if (!collectionMode) {
+      initAgentSocket();
+      loadOnnxModel('model_act.onnx', 'Action Chunking CNN (model_act.onnx)');
+    }
 
     // 10. Start Simulation Animation Loop
     animate();
@@ -301,8 +312,13 @@
   function updateDashcam() {
     if (!dashcamCamera || !dashcamRenderer) return;
 
-    const heading = car && car.mesh ? car.mesh.rotation.y : (car ? car.heading : 0);
-    const pos = car && car.mesh ? car.mesh.position : (car ? car.position : { x: 0, y: 0, z: 0 });
+    if (car && car.mesh) {
+      car.mesh.position.copy(car.position);
+      car.mesh.rotation.y = car.heading;
+    }
+
+    const heading = car ? car.heading : 0;
+    const pos = car ? car.position : { x: 0, y: 0, z: 0 };
 
     // Car forward direction vector in world space
     const fwdX = -Math.sin(heading);
@@ -322,11 +338,11 @@
       pos.z + fwdZ * 30.0
     );
 
-    // Render live feed directly at 64x64 in collectionMode
+    // Render live feed directly at 64x64
     dashcamRenderer.render(scene, dashcamCamera);
 
-    // Blit to 64x64 observation canvas only when not in collection mode
-    if (!collectionMode && obsCtx) {
+    // Blit to 64x64 observation canvas
+    if (obsCtx) {
       obsCtx.drawImage(dashcamCanvas, 0, 0, 64, 64);
     }
   }
@@ -845,7 +861,133 @@
   }
 
   // --------------------------------------------------------------------------
-  // ONNX Runtime Inference & Autonomous Agent
+  // Python Agent WebSocket Bridge (ws://127.0.0.1:8765)
+  // --------------------------------------------------------------------------
+  function setAgentBackend(backend) {
+    usePythonAgent = (backend === 'python');
+    if (btnModePythonAgent) btnModePythonAgent.classList.toggle('active', usePythonAgent);
+    if (btnModeWasmAgent) btnModeWasmAgent.classList.toggle('active', !usePythonAgent);
+    updateAgentUI();
+    showToast(usePythonAgent ? '🐍 Switched to Python Agent (agent.py)' : '⚡ Switched to Browser Model (WASM)');
+  }
+
+  function updateAgentUI() {
+    if (usePythonAgent) {
+      if (autoModelName) autoModelName.textContent = 'Python Agent (agent.py)';
+      if (isAgentSocketConnected) {
+        if (autoModelDesc) autoModelDesc.textContent = 'Connected (ws://127.0.0.1:8765) · ACT K=10 Policy';
+        if (badgeAutoStatus) {
+          badgeAutoStatus.style.background = '';
+          badgeAutoStatus.style.color = '';
+          badgeAutoStatus.style.borderColor = '';
+          badgeAutoStatus.className = isAutoDrivingActive ? 'badge-auto-driving' : 'badge-auto-ready';
+          badgeAutoStatus.textContent = isAutoDrivingActive ? 'DRIVING' : 'AGENT READY';
+        }
+      } else {
+        if (autoModelDesc) autoModelDesc.textContent = 'Disconnected — Run "python agent.py" in terminal';
+        if (badgeAutoStatus) {
+          badgeAutoStatus.className = 'badge-auto-ready';
+          badgeAutoStatus.style.background = 'rgba(239, 68, 68, 0.15)';
+          badgeAutoStatus.style.color = '#f87171';
+          badgeAutoStatus.style.borderColor = 'rgba(239, 68, 68, 0.35)';
+          badgeAutoStatus.textContent = 'AGENT OFFLINE';
+        }
+      }
+    } else {
+      if (badgeAutoStatus) {
+        badgeAutoStatus.style.background = '';
+        badgeAutoStatus.style.color = '';
+        badgeAutoStatus.style.borderColor = '';
+        badgeAutoStatus.className = isAutoDrivingActive ? 'badge-auto-driving' : (onnxSession ? 'badge-auto-ready' : 'badge-auto-idle');
+        badgeAutoStatus.textContent = isAutoDrivingActive ? 'DRIVING' : (onnxSession ? 'READY' : 'NO MODEL');
+      }
+    }
+  }
+
+  function initAgentSocket() {
+    if (agentSocket) {
+      try { agentSocket.close(); } catch (e) {}
+    }
+    try {
+      agentSocket = new WebSocket('ws://127.0.0.1:8765');
+
+      agentSocket.onopen = () => {
+        console.log('[AgentSocket] Connected to Python Agent on ws://127.0.0.1:8765');
+        isAgentSocketConnected = true;
+        updateAgentUI();
+        if (currentMode === 'autonomous') {
+          showToast('🟢 Connected to Python Agent (agent.py)');
+        }
+      };
+
+      agentSocket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'action' && agentPendingActionPromise) {
+            agentPendingActionPromise.resolve(data);
+            agentPendingActionPromise = null;
+          }
+        } catch (e) {
+          console.error('[AgentSocket] Message parse error:', e);
+        }
+      };
+
+      agentSocket.onclose = () => {
+        isAgentSocketConnected = false;
+        updateAgentUI();
+        setTimeout(initAgentSocket, 3000);
+      };
+
+      agentSocket.onerror = () => {
+        isAgentSocketConnected = false;
+        updateAgentUI();
+      };
+    } catch (err) {
+      isAgentSocketConnected = false;
+      updateAgentUI();
+      setTimeout(initAgentSocket, 3000);
+    }
+  }
+
+  async function requestPythonAgentAction() {
+    if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) return null;
+
+    const ctx = obsCanvas.getContext('2d', { willReadFrequently: true });
+    const imgData = ctx.getImageData(0, 0, 64, 64).data;
+    const rgbBytes = new Uint8Array(64 * 64 * 3);
+    for (let i = 0; i < 64 * 64; i++) {
+      rgbBytes[i * 3] = imgData[i * 4];
+      rgbBytes[i * 3 + 1] = imgData[i * 4 + 1];
+      rgbBytes[i * 3 + 2] = imgData[i * 4 + 2];
+    }
+
+    let binary = '';
+    const len = rgbBytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(rgbBytes[i]);
+    }
+    const b64 = btoa(binary);
+
+    const payload = {
+      type: 'observe',
+      rgbBase64: b64,
+      speed: car ? car.speed : 0.0
+    };
+
+    return new Promise((resolve) => {
+      agentPendingActionPromise = { resolve };
+      agentSocket.send(JSON.stringify(payload));
+      setTimeout(() => {
+        if (agentPendingActionPromise) {
+          agentPendingActionPromise = null;
+          resolve(null);
+        }
+      }, 150);
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // ONNX Runtime Inference & Autonomous Agent (Local Browser Fallback)
   // --------------------------------------------------------------------------
   async function loadOnnxModel(source = 'model.onnx', displayName = 'Vision Transformer (ViT-GRU-ACT)') {
     if (typeof ort === 'undefined') {
@@ -984,9 +1126,14 @@
   // Primary Hero "Start / Pause Driving" State Machine
   // --------------------------------------------------------------------------
   function toggleAutoDriving() {
-    if (!onnxSession) {
-      showToast('⚠️ No model loaded! Choose or upload an ONNX model first.');
-      openModelModal();
+    const canDrive = (usePythonAgent && isAgentSocketConnected) || (!usePythonAgent && onnxSession);
+    if (!canDrive) {
+      if (usePythonAgent) {
+        showToast('⚠️ Python Agent offline! Start "python agent.py" in your terminal.');
+      } else {
+        showToast('⚠️ No model loaded! Choose or upload an ONNX model first.');
+        openModelModal();
+      }
       return;
     }
 
@@ -1165,6 +1312,10 @@
     // Autonomous Hero Drive Button
     if (btnHeroAutoDrive) btnHeroAutoDrive.addEventListener('click', toggleAutoDriving);
 
+    // Agent Mode Backend Switchers
+    if (btnModePythonAgent) btnModePythonAgent.addEventListener('click', () => setAgentBackend('python'));
+    if (btnModeWasmAgent) btnModeWasmAgent.addEventListener('click', () => setAgentBackend('wasm'));
+
     // Model Modal Triggers
     if (btnAutoChangeModel) btnAutoChangeModel.addEventListener('click', openModelModal);
     if (btnCloseModal) btnCloseModal.addEventListener('click', closeModelModal);
@@ -1303,15 +1454,35 @@
 
   async function autonomousControlStep() {
     const generation = controlGeneration;
-    // Observe -> infer once (carry GRU memory once) -> advance exactly 50 ms.
+    // Observe -> infer once -> advance exactly 50 ms.
     // Ensure car mesh & dashcam represent exact physics ground truth for camera snapshot
     car.mesh.position.copy(car.position);
     car.mesh.rotation.y = car.heading;
     updateDashcam();
-    const action = await runOnnxInference(obsCanvas);
+
+    let action = null;
+    if (usePythonAgent && isAgentSocketConnected) {
+      const response = await requestPythonAgentAction();
+      if (response) {
+        action = {
+          steering: response.steering,
+          throttle: response.throttle
+        };
+        predictedAction.steering = action.steering;
+        predictedAction.throttle = action.throttle;
+        updateActuationGauges(action.steering, action.throttle);
+      }
+    } else if (onnxSession) {
+      action = await runOnnxInference(obsCanvas);
+    }
+
     if (generation !== controlGeneration || !isAutoDrivingActive || currentMode !== 'autonomous') return;
     if (!action) {
-      pauseAutoDriving('Inference failed; driving paused');
+      if (usePythonAgent && !isAgentSocketConnected) {
+        pauseAutoDriving('Waiting for Python Agent (ws://127.0.0.1:8765)...');
+      } else {
+        pauseAutoDriving('Inference failed; driving paused');
+      }
       return;
     }
     advanceControl(action);
@@ -1325,7 +1496,8 @@
     const dt = Math.min(clock.getDelta(), 0.1);
 
     if (!isOnnxInferring) controlAccumulator += dt;
-    if (currentMode === 'autonomous' && isAutoDrivingActive && onnxSession && !isEpisodeCompleting) {
+    const canDriveAuto = (usePythonAgent && isAgentSocketConnected) || (!usePythonAgent && onnxSession);
+    if (currentMode === 'autonomous' && isAutoDrivingActive && canDriveAuto && !isEpisodeCompleting) {
       if (!isOnnxInferring && controlAccumulator >= CONTROL_DT) {
         controlAccumulator = 0;
         autonomousControlStep();

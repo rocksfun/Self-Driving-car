@@ -728,6 +728,38 @@ html, body {
   animation: pulseBadge 1.2s infinite ease-in-out;
 }
 
+.agent-toggle-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.agent-mode-btn {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.agent-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.agent-mode-btn.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.6);
+  color: #38bdf8;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+}
+
 .model-status-box {
   display: flex;
   justify-content: space-between;
