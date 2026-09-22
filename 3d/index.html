@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NeuroDrive 3D — Autonomous Track Environment</title>
+  <link rel="stylesheet" href="css/style.css?v=5">
+</head>
+<body>
+  <!-- Full-Screen 3D WebGL Canvas -->
+  <div id="canvas-container">
+    <canvas id="three-canvas"></canvas>
+  </div>
+
+  <!-- Top Floating Glass Navigation & Mode Switcher -->
+  <header class="top-hud">
+    <div class="brand-card">
+      <div class="brand-icon">🏎️</div>
+      <div>
+        <div class="brand-title">NeuroDrive 3D</div>
+      </div>
+      <span class="brand-badge badge-manual" id="brand-badge">MANUAL 3D</span>
+    </div>
+
+    <!-- Quick Action / Mode / Camera Controls -->
+    <div class="top-controls">
+      <!-- Driving Mode Switcher -->
+      <div class="mode-switch-group">
+        <button id="btn-mode-manual" class="hud-btn mode-btn active" title="Manual Driving Mode (WASD)">
+          🎮 Manual
+        </button>
+        <button id="btn-mode-auto" class="hud-btn mode-btn" title="Autonomous AI Driving Mode">
+          🤖 Autonomous
+        </button>
+      </div>
+
+      <!-- Camera Angle Switchers -->
+      <button id="btn-cam-follow" class="hud-btn active" title="Third-Person Chase Camera (Press C)">
+        🎥 Chase
+      </button>
+      <button id="btn-cam-heli" class="hud-btn" title="Overhead Helicopter View (Press C)">
+        🚁 Heli
+      </button>
+
+      <!-- Respawn / Reset Button -->
+      <button id="btn-reset-car" class="hud-btn danger" title="Reset Car to Start Line (Press R)">
+        🔄 Reset (R)
+      </button>
+    </div>
+  </header>
+
+  <!-- Left Telemetry & Mini-Map Radar -->
+  <aside class="left-hud">
+    <!-- Live GPS Track Radar -->
+    <div class="radar-card">
+      <div class="card-label">
+        <span>🗺️ GPS RADAR</span>
+        <span style="color: var(--accent-emerald);">LIVE</span>
+      </div>
+      <canvas id="radar-canvas" width="150" height="200"></canvas>
+    </div>
+
+    <!-- Live Vehicle Surface Status -->
+    <div class="status-card">
+      <div class="card-label">
+        <span>TERRAIN STATUS</span>
+      </div>
+      <div id="stat-status" class="status-badge">🟢 ON ROAD</div>
+    </div>
+  </aside>
+
+  <!-- Right Dashboard: Dashcam Feed, Dataset Collector & Autonomous Controls -->
+  <aside class="right-hud">
+    <!-- 1. Live 1st-Person Front Dashcam Feed -->
+    <div class="dashcam-card">
+      <div class="card-label">
+        <span>📷 FRONT DASHCAM FEED</span>
+        <span class="dashcam-live-badge">LIVE 60FPS</span>
+      </div>
+      <div class="dashcam-wrapper">
+        <canvas id="dashcam-canvas" width="128" height="128"></canvas>
+      </div>
+    </div>
+
+    <!-- 2. Dataset Collector (Manual Driving Mode) -->
+    <div class="panel-card recorder-card" id="recorder-panel">
+      <div class="card-label">
+        <span>⏺️ DATASET COLLECTOR</span>
+        <span id="badge-recorder-status" class="recorder-badge-idle">IDLE</span>
+      </div>
+
+      <div class="recorder-content">
+        <div class="obs-preview-row">
+          <div class="obs-frame-container" title="Live 64x64 RGB Observation Frame">
+            <canvas id="obs-canvas" width="64" height="64"></canvas>
+            <span class="obs-dim-tag">64×64</span>
+          </div>
+          <div class="recorder-stats-col">
+            <div class="rec-stat-item">
+              <span class="rec-stat-label">SAMPLES</span>
+              <span id="rec-stat-samples" class="rec-stat-val">0</span>
+            </div>
+            <div class="rec-stat-item">
+              <span class="rec-stat-label">EPISODES</span>
+              <span id="rec-stat-episodes" class="rec-stat-val">0</span>
+            </div>
+            <div class="rec-stat-item">
+              <span class="rec-stat-label">CURRENT ACTION</span>
+              <span id="rec-stat-action" class="rec-stat-val mono">S: 0.00 | T: 0.00</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="recorder-actions">
+          <button id="btn-toggle-record" class="record-btn" title="Toggle recording driving demonstrations">
+            <span class="rec-dot"></span>
+            <span id="btn-record-text">Start Recording</span>
+          </button>
+          <div class="recorder-sub-actions">
+            <button id="btn-download-dataset" class="rec-secondary-btn" disabled title="Export collected dataset as JSON">
+              💾 Download (JSON)
+            </button>
+            <button id="btn-clear-dataset" class="rec-secondary-btn danger" disabled title="Clear recorded samples">
+              🗑️ Clear
+            </button>
+          </div>
+        </div>
+
+        <div class="recorder-hint">
+          Records 64×64 camera frames, actions (steering/throttle) & vehicle speed.
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Autonomous Agent Controller Card (Autonomous Mode) -->
+    <div class="panel-card autonomous-card hidden" id="autonomous-panel">
+      <div class="card-label">
+        <span>🤖 AUTONOMOUS AGENT</span>
+        <span id="badge-auto-status" class="badge-auto-ready">READY</span>
+      </div>
+
+      <div class="autonomous-content">
+        <!-- Active Model Banner -->
+        <div class="model-status-box">
+          <div class="model-status-left">
+            <span class="model-status-icon" id="auto-model-icon">🧠</span>
+            <div class="model-status-info">
+              <div class="model-status-name" id="auto-model-name">Vision Transformer (ViT-GRU-ACT)</div>
+              <div class="model-status-desc" id="auto-model-desc">PyTorch ViT + ACT + GRU Memory (64×64 RGB)</div>
+            </div>
+          </div>
+          <button id="btn-auto-change-model" class="mini-change-btn" title="Choose or switch model">Change</button>
+        </div>
+
+        <!-- PRIMARY HERO START / PAUSE DRIVING BUTTON -->
+        <button id="btn-hero-auto-drive" class="hero-drive-btn" title="Start or Pause Autonomous Driving">
+          <span class="hero-btn-icon" id="hero-btn-icon">▶️</span>
+          <div class="hero-btn-text">
+            <div class="hero-btn-primary" id="hero-btn-text">Start Driving</div>
+            <div class="hero-btn-sub" id="hero-btn-sub">Click to let the AI drive the car</div>
+          </div>
+        </button>
+
+        <!-- Real-Time AI Actuation Telemetry -->
+        <div class="ai-gauges-box">
+          <div class="ai-gauge-row">
+            <span class="gauge-label">STEERING</span>
+            <div class="gauge-track">
+              <div class="gauge-midline"></div>
+              <div id="gauge-steer-bar" class="gauge-fill steer-fill"></div>
+            </div>
+            <span id="gauge-steer-val" class="gauge-val">0.00</span>
+          </div>
+
+          <div class="ai-gauge-row">
+            <span class="gauge-label">THROTTLE</span>
+            <div class="gauge-track">
+              <div class="gauge-midline"></div>
+              <div id="gauge-throttle-bar" class="gauge-fill throttle-fill"></div>
+            </div>
+            <span id="gauge-throttle-val" class="gauge-val">0.00</span>
+          </div>
+        </div>
+
+        <div class="auto-quick-actions">
+          <button id="btn-auto-reset" class="control-action-btn" title="Reset Car to Start Line">
+            🔄 Reset to Start
+          </button>
+          <button id="btn-auto-manual" class="control-action-btn secondary" title="Switch back to Manual Drive">
+            🎮 Manual Drive
+          </button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Bottom Speedometer & Gear HUD -->
+  <div class="bottom-hud">
+    <div class="speedo-card">
+      <div class="speedo-number-box">
+        <div id="stat-speed" class="speedo-val">0</div>
+        <div class="speedo-unit">KM / H</div>
+      </div>
+      <div class="speedo-divider"></div>
+      <div class="speedo-stats">
+        <div class="stat-row">
+          <span class="stat-key">GEAR</span>
+          <span id="stat-gear" class="gear-badge">N</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-key">DIST</span>
+          <span id="stat-distance" class="stat-value">0 M</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-key">EPISODE</span>
+          <span id="stat-episode-hud" class="stat-value" style="color: var(--accent-cyan); font-weight: 800;">1</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom-Right Controls Hint -->
+  <div class="controls-hint">
+    <div><span class="key-kbd">W</span> / <span class="key-kbd">▲</span> Throttle</div>
+    <div><span class="key-kbd">S</span> / <span class="key-kbd">▼</span> Brake / Reverse</div>
+    <div><span class="key-kbd">A</span> / <span class="key-kbd">D</span> Steer</div>
+    <div><span class="key-kbd">C</span> Toggle Camera (Chase / Heli)</div>
+    <div><span class="key-kbd">R</span> Respawn at Start</div>
+  </div>
+
+  <!-- Model Selection Modal -->
+  <div id="model-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">📦 Choose Model to Load</div>
+        <button id="btn-close-modal" class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="model-option" id="opt-load-onnx">
+          <div class="opt-icon">🧠</div>
+          <div class="opt-info">
+            <div class="opt-title">Vision Transformer (ViT-GRU-ACT)</div>
+            <div class="opt-desc">Trained with Spline Oracle & DAgger (&ge;35% Noise)</div>
+          </div>
+          <button class="opt-btn">Load</button>
+        </div>
+
+        <div class="model-option" id="opt-load-custom">
+          <div class="opt-icon">📂</div>
+          <div class="opt-info">
+            <div class="opt-title">Upload Custom Model (.onnx)...</div>
+            <div class="opt-desc">Select any custom .onnx model from your machine</div>
+          </div>
+          <button class="opt-btn">Browse</button>
+          <input type="file" id="input-model-file" accept=".onnx" style="display: none;" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Toast Notification Overlay -->
+  <div id="toast-overlay" class="toast-overlay">Welcome to NeuroDrive 3D!</div>
+
+  <!-- ONNX Runtime Web for Browser AI Inference -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+
+  <!-- Three.js Library via CDN -->
+  <script src="vendor/three.r128.min.js"></script>
+
+  <!-- Simulation JavaScript Modules -->
+  <script src="js/track3d.js?v=9"></script>
+  <script src="js/scenery.js?v=9"></script>
+  <script src="js/car3d.js?v=10"></script>
+  <script src="js/oracle3d.js?v=3"></script>
+  <script src="js/collection_bridge.js?v=2"></script>
+  <script src="js/app3d.js?v=10"></script>
+</body>
+</html>
