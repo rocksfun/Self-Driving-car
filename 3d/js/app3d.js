@@ -80,12 +80,10 @@
   let currentEpisodeSteps = [];
   let totalRecordedSamples = 0;
 
-  // Autonomous Driving & ONNX Model State
-  let onnxSession = null;
-  let isOnnxInferring = false;
-  let onnxHiddenState = null; // GRU Recurrent Memory state [1, 128]
+  // Autonomous Driving State
   let isAutoDrivingActive = false; // Car starts stationary until "Start Driving" is clicked
   let predictedAction = { steering: 0.0, throttle: 0.0 };
+  let currentLanguageIntent = 'take right'; // 'take left' or 'take right'
 
   // Episode Lifecycle
   let isEpisodeCompleting = false;
@@ -135,7 +133,6 @@
   const badgeAutoStatus = document.getElementById('badge-auto-status');
   const autoModelName = document.getElementById('auto-model-name');
   const autoModelDesc = document.getElementById('auto-model-desc');
-  const btnAutoChangeModel = document.getElementById('btn-auto-change-model');
   const btnHeroAutoDrive = document.getElementById('btn-hero-auto-drive');
   const heroBtnIcon = document.getElementById('hero-btn-icon');
   const heroBtnText = document.getElementById('hero-btn-text');
@@ -149,23 +146,44 @@
   const gaugeThrottleBar = document.getElementById('gauge-throttle-bar');
   const gaugeThrottleVal = document.getElementById('gauge-throttle-val');
 
-  // Agent Backend Switcher & WebSocket Bridge
-  const btnModePythonAgent = document.getElementById('btn-mode-python-agent');
-  const btnModeWasmAgent = document.getElementById('btn-mode-wasm-agent');
+  // Language Intent Command Elements
+  const inputLanguageIntent = document.getElementById('input-language-intent');
+  const btnSubmitIntent = document.getElementById('btn-submit-intent');
+  const badgeActiveIntent = document.getElementById('badge-active-intent');
+  const chipIntentLeft = document.getElementById('chip-intent-left');
+  const chipIntentRight = document.getElementById('chip-intent-right');
+  const intentFeedback = document.getElementById('intent-feedback');
+
+  // Python Agent WebSocket Bridge (agent.py)
+  const autoModelIcon = document.getElementById('auto-model-icon');
+  const btnAutoChangeModel = document.getElementById('btn-auto-change-model');
+
+  // Model Selection Modal Elements
+  const modelModal = document.getElementById('model-modal');
+  const btnCloseModal = document.getElementById('btn-close-modal');
+  const optLoadAct = document.getElementById('opt-load-act');
+  const optLoadOnnx = document.getElementById('opt-load-onnx');
+  const optLoadCustom = document.getElementById('opt-load-custom');
+  const inputModelFile = document.getElementById('input-model-file');
+
+  let currentModelInfo = null;
   let agentSocket = null;
   let isAgentSocketConnected = false;
   let isAgentInferring = false;
   let agentRequestId = 0;
   const agentPendingPromises = new Map();
   let consecutiveAgentFailures = 0;
-  let usePythonAgent = true;
+  let onnxSession = null;
+  let onnxHiddenState = null;
+  let isOnnxInferring = false;
 
-  // Model Selection Modal Elements
-  const modelModal = document.getElementById('model-modal');
-  const btnCloseModal = document.getElementById('btn-close-modal');
-  const optLoadOnnx = document.getElementById('opt-load-onnx');
-  const optLoadCustom = document.getElementById('opt-load-custom');
-  const inputModelFile = document.getElementById('input-model-file');
+  function openModelModal() {
+    if (modelModal) modelModal.classList.remove('hidden');
+  }
+
+  function closeModelModal() {
+    if (modelModal) modelModal.classList.add('hidden');
+  }
 
   // --------------------------------------------------------------------------
   // Initialization
@@ -314,11 +332,6 @@
 
   function updateDashcam() {
     if (!dashcamCamera || !dashcamRenderer) return;
-
-    if (car && car.mesh) {
-      car.mesh.position.copy(car.position);
-      car.mesh.rotation.y = car.heading;
-    }
 
     const heading = car ? car.heading : 0;
     const pos = car ? car.position : { x: 0, y: 0, z: 0 };
@@ -673,11 +686,7 @@
         toggleRecording();
       }
 
-      // If no model loaded, attempt loading default model.onnx
-      if (!onnxSession) {
-        loadOnnxModel('../model.onnx', 'Vision CNN (model.onnx)');
-      }
-
+      updateAgentUI();
       showToast('🤖 Autonomous AI Mode active. Click "Start Driving" to launch.');
     }
   }
@@ -752,6 +761,8 @@
       step: currentEpisodeSteps.length,
       timestamp: Date.now(),
       simulationTime: currentEpisodeSteps.length * CONTROL_DT,
+      intent: currentLanguageIntent,
+      intentId: currentLanguageIntent === 'take left' ? 0 : 1,
       action: {
         steering, throttle,
         allowReverse: action.allowReverse,
@@ -864,45 +875,54 @@
   }
 
   // --------------------------------------------------------------------------
-  // Python Agent WebSocket Bridge (ws://127.0.0.1:8765)
+  // Python Agent WebSocket Bridge (localhost / 127.0.0.1 on port 8765)
   // --------------------------------------------------------------------------
-  function setAgentBackend(backend) {
-    usePythonAgent = (backend === 'python');
-    if (btnModePythonAgent) btnModePythonAgent.classList.toggle('active', usePythonAgent);
-    if (btnModeWasmAgent) btnModeWasmAgent.classList.toggle('active', !usePythonAgent);
-    updateAgentUI();
-    showToast(usePythonAgent ? '🐍 Switched to Python Agent (agent.py)' : '⚡ Switched to Browser Model (WASM)');
+  let agentHostIndex = 0;
+  function getAgentCandidateHosts() {
+    const pageHost = window.location.hostname || 'localhost';
+    if (pageHost === 'localhost') {
+      return ['localhost', '127.0.0.1'];
+    } else if (pageHost === '127.0.0.1') {
+      return ['127.0.0.1', 'localhost'];
+    } else {
+      return [pageHost, 'localhost', '127.0.0.1'];
+    }
+  }
+
+  function getAgentWsUrl() {
+    const hosts = getAgentCandidateHosts();
+    const host = hosts[agentHostIndex % hosts.length];
+    return `ws://${host}:8765`;
   }
 
   function updateAgentUI() {
-    if (usePythonAgent) {
-      if (autoModelName) autoModelName.textContent = 'Python Agent (agent.py)';
-      if (isAgentSocketConnected) {
-        if (autoModelDesc) autoModelDesc.textContent = 'Connected (ws://127.0.0.1:8765) · ACT K=10 Policy';
-        if (badgeAutoStatus) {
-          badgeAutoStatus.style.background = '';
-          badgeAutoStatus.style.color = '';
-          badgeAutoStatus.style.borderColor = '';
-          badgeAutoStatus.className = isAutoDrivingActive ? 'badge-auto-driving' : 'badge-auto-ready';
-          badgeAutoStatus.textContent = isAutoDrivingActive ? 'DRIVING' : 'AGENT READY';
-        }
+    if (isAgentSocketConnected) {
+      if (currentModelInfo) {
+        if (autoModelName) autoModelName.textContent = currentModelInfo.name || currentModelInfo.filename || 'Autonomous Policy';
+        const chunkText = currentModelInfo.isChunked ? `ACT K=${currentModelInfo.chunkSize || 10} Chunking` : 'Single-Step CNN';
+        const urlStr = agentSocket ? agentSocket.url : 'ws://localhost:8765';
+        if (autoModelDesc) autoModelDesc.textContent = `${chunkText} · Connected (${urlStr})`;
+        if (autoModelIcon) autoModelIcon.textContent = currentModelInfo.isChunked ? '⚡' : '🧠';
       } else {
-        if (autoModelDesc) autoModelDesc.textContent = 'Disconnected — Run "python agent.py" in terminal';
-        if (badgeAutoStatus) {
-          badgeAutoStatus.className = 'badge-auto-ready';
-          badgeAutoStatus.style.background = 'rgba(239, 68, 68, 0.15)';
-          badgeAutoStatus.style.color = '#f87171';
-          badgeAutoStatus.style.borderColor = 'rgba(239, 68, 68, 0.35)';
-          badgeAutoStatus.textContent = 'AGENT OFFLINE';
-        }
+        if (autoModelName) autoModelName.textContent = 'Python Driver (agent.py)';
+        const urlStr = agentSocket ? agentSocket.url : 'ws://localhost:8765';
+        if (autoModelDesc) autoModelDesc.textContent = `Connected (${urlStr}) · Synchronizing policy...`;
       }
-    } else {
       if (badgeAutoStatus) {
         badgeAutoStatus.style.background = '';
         badgeAutoStatus.style.color = '';
         badgeAutoStatus.style.borderColor = '';
-        badgeAutoStatus.className = isAutoDrivingActive ? 'badge-auto-driving' : (onnxSession ? 'badge-auto-ready' : 'badge-auto-idle');
-        badgeAutoStatus.textContent = isAutoDrivingActive ? 'DRIVING' : (onnxSession ? 'READY' : 'NO MODEL');
+        badgeAutoStatus.className = isAutoDrivingActive ? 'badge-auto-driving' : 'badge-auto-ready';
+        badgeAutoStatus.textContent = isAutoDrivingActive ? 'DRIVING' : 'AGENT READY';
+      }
+    } else {
+      if (autoModelDesc) autoModelDesc.textContent = 'Disconnected — Run "python agent.py" in terminal';
+      if (badgeAutoStatus) {
+        badgeAutoStatus.className = 'badge-auto-ready';
+        badgeAutoStatus.style.background = 'rgba(239, 68, 68, 0.15)';
+        badgeAutoStatus.style.color = '#f87171';
+        badgeAutoStatus.style.borderColor = 'rgba(239, 68, 68, 0.35)';
+        badgeAutoStatus.textContent = 'AGENT OFFLINE';
       }
     }
   }
@@ -912,12 +932,16 @@
       try { agentSocket.close(); } catch (e) {}
     }
     try {
-      agentSocket = new WebSocket('ws://127.0.0.1:8765');
+      const wsUrl = getAgentWsUrl();
+      agentSocket = new WebSocket(wsUrl);
 
       agentSocket.onopen = () => {
-        console.log('[AgentSocket] Connected to Python Agent on ws://127.0.0.1:8765');
+        console.log(`[AgentSocket] Connected to Python Agent on ${wsUrl}`);
         isAgentSocketConnected = true;
         updateAgentUI();
+        try {
+          agentSocket.send(JSON.stringify({ type: 'get_model_info' }));
+        } catch (e) {}
         if (currentMode === 'autonomous') {
           showToast('🟢 Connected to Python Agent (agent.py)');
         }
@@ -933,6 +957,23 @@
               agentPendingPromises.delete(reqId);
               resolve(data);
             }
+          } else if (data.type === 'intent_ack') {
+            if (intentFeedback) {
+              intentFeedback.textContent = `✓ Agent acknowledged: "${data.intent.toUpperCase()}"`;
+              intentFeedback.className = 'intent-feedback-text success';
+            }
+          } else if (data.type === 'model_info' || data.type === 'model_loaded') {
+            currentModelInfo = data;
+            if (data.current_intent) {
+              setLanguageIntent(data.current_intent, '', false);
+            }
+            updateAgentUI();
+            closeModelModal();
+            if (data.type === 'model_loaded') {
+              showToast(`✅ Loaded model: ${data.name || data.filename}`);
+            }
+          } else if (data.type === 'error') {
+            showToast(`⚠️ Agent error: ${data.message}`);
           }
         } catch (e) {
           console.error('[AgentSocket] Message parse error:', e);
@@ -942,7 +983,8 @@
       agentSocket.onclose = () => {
         isAgentSocketConnected = false;
         updateAgentUI();
-        setTimeout(initAgentSocket, 3000);
+        agentHostIndex++;
+        setTimeout(initAgentSocket, 2500);
       };
 
       agentSocket.onerror = () => {
@@ -952,7 +994,8 @@
     } catch (err) {
       isAgentSocketConnected = false;
       updateAgentUI();
-      setTimeout(initAgentSocket, 3000);
+      agentHostIndex++;
+      setTimeout(initAgentSocket, 2500);
     }
   }
 
@@ -980,7 +1023,9 @@
       type: 'observe',
       reqId: reqId,
       rgbBase64: b64,
-      speed: car ? car.speed : 0.0
+      speed: car ? car.speed : 0.0,
+      intent: currentLanguageIntent,
+      intentId: currentLanguageIntent === 'take left' ? 0 : 1
     };
 
     return new Promise((resolve) => {
@@ -1129,14 +1174,8 @@
   // Primary Hero "Start / Pause Driving" State Machine
   // --------------------------------------------------------------------------
   function toggleAutoDriving() {
-    const canDrive = (usePythonAgent && isAgentSocketConnected) || (!usePythonAgent && onnxSession);
-    if (!canDrive) {
-      if (usePythonAgent) {
-        showToast('⚠️ Python Agent offline! Start "python agent.py" in your terminal.');
-      } else {
-        showToast('⚠️ No model loaded! Choose or upload an ONNX model first.');
-        openModelModal();
-      }
+    if (!isAgentSocketConnected) {
+      showToast('⚠️ Python Agent offline! Start "python agent.py" in your terminal.');
       return;
     }
 
@@ -1260,9 +1299,92 @@
   // --------------------------------------------------------------------------
   // Event Listeners & Input Bindings
   // --------------------------------------------------------------------------
+  // Language Intent Command Handlers (VLA Mode)
+  // --------------------------------------------------------------------------
+  function parseLanguageIntent(input) {
+    if (!input || typeof input !== 'string') return null;
+    const text = input.trim().toLowerCase();
+    if (text.includes('left')) return 'take left';
+    if (text.includes('right')) return 'take right';
+    return null;
+  }
+
+  function updateLanguageIntentUI(intent, sourceText = '') {
+    if (badgeActiveIntent) {
+      if (intent === 'take left') {
+        badgeActiveIntent.className = 'badge-intent-active intent-badge-left';
+        badgeActiveIntent.textContent = '👈 TAKE LEFT';
+      } else {
+        badgeActiveIntent.className = 'badge-intent-active intent-badge-right';
+        badgeActiveIntent.textContent = '👉 TAKE RIGHT';
+      }
+    }
+    if (chipIntentLeft) chipIntentLeft.classList.toggle('active', intent === 'take left');
+    if (chipIntentRight) chipIntentRight.classList.toggle('active', intent === 'take right');
+
+    if (intentFeedback) {
+      const detail = sourceText && sourceText !== intent ? ` (parsed from "${sourceText}")` : '';
+      intentFeedback.textContent = `Active: "${intent.toUpperCase()}"${detail}`;
+      intentFeedback.className = 'intent-feedback-text success';
+    }
+    if (inputLanguageIntent) {
+      inputLanguageIntent.placeholder = `Command the AI: current is "${intent}"...`;
+    }
+  }
+
+  function setLanguageIntent(intent, sourceText = '', notifyAgent = true) {
+    const parsed = parseLanguageIntent(intent);
+    if (!parsed) {
+      if (intentFeedback) {
+        intentFeedback.textContent = `⚠️ Unrecognized: "${intent}". Try "take left" or "take right".`;
+        intentFeedback.className = 'intent-feedback-text error';
+      }
+      showToast(`⚠️ Unrecognized: "${intent}". Use left/right.`);
+      return false;
+    }
+
+    currentLanguageIntent = parsed;
+    updateLanguageIntentUI(parsed, sourceText);
+
+    if (notifyAgent && agentSocket && agentSocket.readyState === WebSocket.OPEN) {
+      try {
+        agentSocket.send(JSON.stringify({
+          type: 'set_intent',
+          intent: parsed,
+          intentId: parsed === 'take left' ? 0 : 1,
+          rawText: sourceText || parsed
+        }));
+      } catch (e) {
+        console.warn('[App3D] Failed to notify agent socket of intent change:', e);
+      }
+    }
+    showToast(`💬 Intent: ${parsed.toUpperCase()}`);
+    return true;
+  }
+
+  function submitLanguageIntent() {
+    if (!inputLanguageIntent) return;
+    const text = inputLanguageIntent.value.trim();
+    if (!text) return;
+    const success = setLanguageIntent(text, text, true);
+    if (success) {
+      inputLanguageIntent.value = '';
+      inputLanguageIntent.blur();
+    }
+  }
+
+  // --------------------------------------------------------------------------
   function setupEvents() {
-    // Keyboard input handling for Manual Mode
+    // Keyboard input handling for Manual Mode & shortcuts
     window.addEventListener('keydown', (e) => {
+      // If typing inside an input field, do not trigger car drive controls
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+        if (e.key === 'Enter' && e.target.id === 'input-language-intent') {
+          submitLanguageIntent();
+        }
+        return;
+      }
+
       if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') keys.forward = true;
       if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') keys.reverse = true;
       if (e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') keys.left = true;
@@ -1275,6 +1397,13 @@
 
       if (e.key === 'c' || e.key === 'C') {
         setCameraMode(currentCameraMode === 'follow' ? 'heli' : 'follow');
+      }
+
+      // Quick intent hotkeys: 1 for left, 2 for right
+      if (e.key === '1') {
+        setLanguageIntent('take left', 'key 1');
+      } else if (e.key === '2') {
+        setLanguageIntent('take right', 'key 2');
       }
 
       // Space bar to toggle recording in Manual mode, or toggle drive in Auto mode
@@ -1315,9 +1444,10 @@
     // Autonomous Hero Drive Button
     if (btnHeroAutoDrive) btnHeroAutoDrive.addEventListener('click', toggleAutoDriving);
 
-    // Agent Mode Backend Switchers
-    if (btnModePythonAgent) btnModePythonAgent.addEventListener('click', () => setAgentBackend('python'));
-    if (btnModeWasmAgent) btnModeWasmAgent.addEventListener('click', () => setAgentBackend('wasm'));
+    // Language Intent UI Listeners
+    if (btnSubmitIntent) btnSubmitIntent.addEventListener('click', submitLanguageIntent);
+    if (chipIntentLeft) chipIntentLeft.addEventListener('click', () => setLanguageIntent('take left', 'chip'));
+    if (chipIntentRight) chipIntentRight.addEventListener('click', () => setLanguageIntent('take right', 'chip'));
 
     // Model Modal Triggers
     if (btnAutoChangeModel) btnAutoChangeModel.addEventListener('click', openModelModal);
@@ -1328,11 +1458,27 @@
       });
     }
 
-    // Modal Option: Load Default model.onnx
+    // Modal Option: Load Action Chunking Policy (model_act.onnx)
+    if (optLoadAct) {
+      optLoadAct.addEventListener('click', () => {
+        if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
+          showToast('⚠️ Agent offline. Run "python agent.py" in terminal first.');
+          return;
+        }
+        showToast('⏳ Switching to ACT Model in agent.py...');
+        agentSocket.send(JSON.stringify({ type: 'load_model', model: 'act' }));
+      });
+    }
+
+    // Modal Option: Load Baseline Vision CNN (model.onnx)
     if (optLoadOnnx) {
-      optLoadOnnx.addEventListener('click', async () => {
-        closeModelModal();
-        await loadOnnxModel('../model.onnx', 'Vision CNN (model.onnx)');
+      optLoadOnnx.addEventListener('click', () => {
+        if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
+          showToast('⚠️ Agent offline. Run "python agent.py" in terminal first.');
+          return;
+        }
+        showToast('⏳ Switching to Baseline CNN in agent.py...');
+        agentSocket.send(JSON.stringify({ type: 'load_model', model: 'baseline' }));
       });
     }
 
@@ -1342,17 +1488,24 @@
         inputModelFile.click();
       });
 
-      inputModelFile.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
+      inputModelFile.addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
         if (!file) return;
-
-        closeModelModal();
-        try {
-          const buffer = await file.arrayBuffer();
-          await loadOnnxModel(buffer, file.name);
-        } catch (err) {
-          showToast(`⚠️ Failed reading model file: ${err.message}`);
+        if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
+          showToast('⚠️ Agent offline. Run "python agent.py" in terminal first.');
+          return;
         }
+        showToast(`⏳ Uploading ${file.name} to agent.py...`);
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64Str = reader.result.split(',')[1];
+          agentSocket.send(JSON.stringify({
+            type: 'upload_model',
+            name: file.name,
+            modelBase64: base64Str
+          }));
+        };
+        reader.readAsDataURL(file);
       });
     }
 
@@ -1455,16 +1608,14 @@
     completeEpisodeIfParked();
   }
 
-  async function autonomousControlStep() {
+  async function autonomousInferenceStep() {
     if (isOnnxInferring || isAgentInferring) return;
     const generation = controlGeneration;
 
-    car.mesh.position.copy(car.position);
-    car.mesh.rotation.y = car.heading;
     updateDashcam();
 
     let action = null;
-    if (usePythonAgent && isAgentSocketConnected) {
+    if (isAgentSocketConnected) {
       isAgentInferring = true;
       try {
         const response = await requestPythonAgentAction();
@@ -1473,34 +1624,28 @@
             steering: response.steering,
             throttle: response.throttle
           };
-          predictedAction.steering = action.steering;
-          predictedAction.throttle = action.throttle;
-          updateActuationGauges(action.steering, action.throttle);
         }
       } finally {
         isAgentInferring = false;
       }
-    } else if (onnxSession) {
-      action = await runOnnxInference(obsCanvas);
     }
 
     if (generation !== controlGeneration || !isAutoDrivingActive || currentMode !== 'autonomous') return;
-    if (!action) {
+    if (action) {
+      consecutiveAgentFailures = 0;
+      predictedAction.steering = action.steering;
+      predictedAction.throttle = action.throttle;
+      updateActuationGauges(action.steering, action.throttle);
+    } else {
       consecutiveAgentFailures++;
-      if (consecutiveAgentFailures < 4 && Math.abs(predictedAction.throttle) > 0.01) {
-        // Carry forward previous action smoothly for up to 3 dropped network frames
-        advanceControl(predictedAction);
-        return;
+      if (consecutiveAgentFailures >= 6) {
+        if (!isAgentSocketConnected) {
+          pauseAutoDriving(`Waiting for Python Agent (${getAgentWsUrl()})...`);
+        } else {
+          pauseAutoDriving('Inference connection timed out; driving paused');
+        }
       }
-      if (usePythonAgent && !isAgentSocketConnected) {
-        pauseAutoDriving('Waiting for Python Agent (ws://127.0.0.1:8765)...');
-      } else {
-        pauseAutoDriving('Inference connection timed out; driving paused');
-      }
-      return;
     }
-    consecutiveAgentFailures = 0;
-    advanceControl(action);
   }
 
   function animate(timestamp = 0) {
@@ -1510,32 +1655,32 @@
     requestAnimationFrame(animate);
     const dt = Math.min(clock.getDelta(), 0.1);
 
-    const isBusy = isOnnxInferring || isAgentInferring;
-    if (!isBusy) controlAccumulator += dt;
-    const canDriveAuto = (usePythonAgent && isAgentSocketConnected) || (!usePythonAgent && onnxSession);
+    // Continuous fixed-timestep physics accumulator (independent of network round-trips)
+    controlAccumulator += dt;
+    const canDriveAuto = isAgentSocketConnected;
+
     if (currentMode === 'autonomous' && isAutoDrivingActive && canDriveAuto && !isEpisodeCompleting) {
-      if (!isBusy && controlAccumulator >= CONTROL_DT) {
-        controlAccumulator = 0;
-        autonomousControlStep();
+      while (controlAccumulator >= CONTROL_DT) {
+        controlAccumulator -= CONTROL_DT;
+        advanceControl(predictedAction);
+      }
+      // Trigger background perception & inference whenever free
+      if (!isAgentInferring) {
+        autonomousInferenceStep();
       }
     } else {
       while (controlAccumulator >= CONTROL_DT) {
         controlAccumulator -= CONTROL_DT;
         if (isEpisodeCompleting) {
-          // Neutral lets friction finish the stop. No held negative throttle
-          // can back the parked car out of its successful terminal state.
           advanceControl([0, 0]);
         } else if (currentMode === 'manual') {
           const action = manualAction();
           if (isRecording) {
-            car.mesh.position.copy(car.position);
-            car.mesh.rotation.y = car.heading;
             updateDashcam();
             recordDataSample(action);
           }
           advanceControl(action);
         } else {
-          // A paused autonomous car brakes to rest with the same fixed steps.
           advanceControl([0, -1]);
         }
       }

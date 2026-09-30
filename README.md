@@ -1,20 +1,17 @@
-# 🏎️ Autonomous Self-Driving Car (End-to-End Vision CNN + DAgger)
+# 🏎️ NeuroDrive VLA — Vision-Language-Action Autonomous Driving Stack
 
-An end-to-end autonomous driving stack featuring a **3D WebGL physics environment (Three.js)**, automated **DAgger (Dataset Aggregation)** expert supervision via headless browser automation (Playwright), a **PyTorch Vision Convolutional Neural Network (CNN)** policy, and real-time **in-browser ONNX Runtime Web** inference.
-
-![Autonomous Garage Completion](assets/garage_success.png)
-*Autonomous agent completing a full course lap from the South Start Line to a perfect stop inside the Parking Garage.*
+An end-to-end autonomous driving platform featuring a **3D WebGL physics environment (Three.js)**, **natural language intent conditioning** (*"take left"* vs. *"take right"* at the roundabout), automated **DAgger (Dataset Aggregation)** expert demonstrations via headless browser automation (Playwright), and a decoupled **Python WebSocket driver (`agent.py`)** with real-time actuation telemetry.
 
 ---
 
 ## 🌟 Key Highlights & Engineering Features
 
-- **🌐 In-Browser 3D Simulation & Telemetry:** Built with Three.js featuring real-time vehicle kinematics, multi-surface friction (road vs. grass), dynamic day lighting, third-person chase camera, helicopter overhead camera, HUD dashboard, and live GPS radar.
-- **👁️ First-Person Dashcam Perception:** A dedicated forward-facing camera renders a $64 \times 64 \times 3$ RGB observation feed with a true 1:1 aspect ratio, giving the policy an authentic driver's view of curves, curbs, and garage gates.
-- **🤖 Automated DAgger Data Collection:** Headless Playwright script (`collect_dagger.py`) executes high-speed parallel rollouts with Ornstein-Uhlenbeck (OU) exploration noise and scheduled off-road grass recovery bursts.
-- **⚡ Transport Delay Compensation (0.001 ms vs 35 ms):** Bridges the actuation delay gap by training the Oracle with kinematic forward projection ($\tau = 40\text{ ms}$) and speed-scaled dynamic lookahead ($3.5\text{m} - 12\text{m}$), eliminating late-turn overshoot and "hunting" steering wobbles.
-- **🛡️ Positive Throttle Floor & Anti-Stall Architecture:** Eliminates conflicting open-road braking labels in the dataset, ensuring the feedforward policy cruises smoothly at $\approx 13.5\text{ m/s}$ ($48\text{ km/h}$) without mode-collapse stalling.
-- **🚀 Accelerated Training Pipeline:** Uses in-memory `uint8` tensors (296 MB RAM footprint) and device-preserving ONNX export, training 15 epochs in under 30 seconds on Apple Silicon (MPS).
+- **💬 Natural Language Intent Dispatch:** Interactive HUD prompt bar (`Command the AI: "take left", "take right"...`), one-click suggestion chips, and hotkeys (`1` / `2`). Language commands are parsed, tokenized (`0` = left, `1` = right), and synchronized over WebSocket in under 2 ms.
+- **🌐 In-Browser 3D Simulation & Telemetry:** Built with Three.js featuring real-time vehicle kinematics, multi-surface friction (tarmac vs. grass), dynamic daylighting, third-person chase camera, overhead helicopter camera, and live GPS radar.
+- **👁️ First-Person Dashcam Perception:** Dedicated forward-facing dashcam renders a $64 \times 64 \times 3$ RGB observation feed with a true 1:1 aspect ratio, giving the agent an authentic driver's view of curves, curbs, and garage stalls.
+- **⚡ Standalone Python Agent (`agent.py`):** Completely decouples driver intelligence from the simulation client. Receives camera frames and language intents over local WebSocket (`ws://localhost:8765`), manages Temporal Ensembling across trajectory chunks, and bridges continuous control signals back to the vehicle plant.
+- **🤖 Automated DAgger Data Collection (`collect_dagger.py`):** Headless Playwright script executes high-speed parallel rollouts with Ornstein-Uhlenbeck (OU) exploration noise, off-road grass recovery bursts, and a balanced 50/50 left/right roundabout route distribution.
+- **📦 Pre-Labeled Multimodal Dataset (`dataset_dagger.pt`):** Contains 14,050 transition frames ($64 \times 64 \times 3$ `uint8`), continuous expert action labels, vehicle states, and per-episode branch labels (`'left'` vs. `'right'`) ready for VLA training.
 
 ---
 
@@ -22,30 +19,25 @@ An end-to-end autonomous driving stack featuring a **3D WebGL physics environmen
 
 ```mermaid
 flowchart LR
-    subgraph Simulation ["3D WebGL Simulation (Three.js)"]
-        Physics["Kinematic Bicycle Model\n(car3d.js)"] --> Dashcam["Front Dashcam Camera\n(64x64 RGB)"]
-        Dashcam --> WebGL["WASM / WebGL Inference\n(ONNX Runtime Web)"]
-        WebGL --> Filter["EMA Smoothing\n+ Cruise Governor"]
-        Filter --> Physics
+    subgraph Browser ["3D WebGL Simulation (http://localhost:8080/3d/)"]
+        Physics["Kinematic Bicycle Model\n(car3d.js)"] --> Dashcam["Front Dashcam\n(64x64 RGB)"]
+        UI["Language Intent Bar\n('take left' / 'take right')"] --> Dispatch["Telemetry & Command Dispatcher\n(app3d.js)"]
+        Dashcam --> Dispatch
+        Actuators["Vehicle Actuators\n[steer, throttle]"] --> Physics
     end
 
-    subgraph DAgger ["DAgger Training Loop"]
-        Rollout["Playwright Headless Rollout\n+ OU Drift Noise"] --> Oracle["Kinematic Projected Oracle\n(oracle3d.js)"]
-        Oracle --> Dataset["dataset_dagger.pt\n(Clean Labels)"]
-        Dataset --> Train["PyTorch CNN Training\n(train_policy.py)"]
-        Train --> Export["ONNX Export\n(model_policy.py)"]
-        Export -.-> WebGL
+    subgraph Agent ["Autonomous Agent Driver (ws://localhost:8765)"]
+        WS["WebSocket Server\n(agent.py)"] --> Parser["Intent Parser & Tokenizer\n('take left' -> 0, 'take right' -> 1)"]
+        WS --> Vision["Image Preprocessor\n[1, 3, 64, 64] Float32"]
+        Parser --> Policy["VLA Policy / ACT Model\n(ONNX Runtime)"]
+        Vision --> Policy
+        Policy --> Ensembling["Temporal Ensembling\n+ Cruise Governor"]
+        Ensembling --> WS
     end
+
+    Dispatch -- "observe: {rgbBase64, speed, intent}" --> WS
+    WS -- "action: [steering, throttle]" --> Actuators
 ```
-
----
-
-## 📊 Dataset & Trajectory Analysis
-
-During data collection, the environment injects persistent grass-drift bursts that push the car across curbs into the off-road terrain, capturing dense recovery demonstrations back to the road centerline:
-
-![Trajectory Plots](assets/episode_paths_plot.png)
-*Visualization of DAgger rollout episodes: Left (Clockwise) and Right (Counter-Clockwise) roundabout splits with grass recovery maneuvers.*
 
 ---
 
@@ -53,27 +45,26 @@ During data collection, the environment injects persistent grass-drift bursts th
 
 ```
 .
-├── 3d/                          # 3D WebGL Simulation Client
+├── 3d/                          # 3D WebGL Simulation Environment
 │   ├── index.html               # Main simulation dashboard & HUD interface
 │   ├── css/
-│   │   └── style.css            # Dark glassmorphism HUD styles
+│   │   └── style.css            # Dark glassmorphism HUD & Language Intent styling
 │   ├── js/
-│   │   ├── app3d.js             # Main simulation runner & ONNX inference loop
-│   │   ├── car3d.js             # Vehicle physics, steering inertia & friction
+│   │   ├── app3d.js             # Simulation runner, intent parsing & WebSocket bridge
+│   │   ├── car3d.js             # Vehicle kinematics, steering inertia & friction
 │   │   ├── track3d.js           # 3D track mesh, roundabout, S-curves & garage
-│   │   ├── oracle3d.js          # Pure pursuit Oracle with 40ms latency compensation
+│   │   ├── oracle3d.js          # Pure pursuit Oracle with left/right roundabout branches
 │   │   ├── scenery.js           # Procedural trees, buildings, barriers & terrain
 │   │   └── collection_bridge.js # Bridge interface for headless Playwright rollouts
-│   ├── model.onnx               # Trained Vision CNN policy (ONNX format)
-│   ├── model.onnx.data          # Exported model tensor weights
+│   ├── model_act.onnx           # Active policy model weights
 │   └── vendor/                  # Three.js r128 & ONNX Runtime Web dependencies
-├── assets/                      # Repository screenshots and trajectory plots
+├── agent.py                     # Standalone Python WebSocket agent with language intent support
 ├── collect_dagger.py            # Automated headless DAgger data collection script
-├── model_policy.py              # PyTorch Vision CNN model architecture & ONNX exporter
-├── train_policy.py              # PyTorch training pipeline with in-memory uint8 tensors
+├── dataset_dagger.pt            # 14,050 transition frames with branch metadata
 ├── plot_trajectories.py         # Matplotlib trajectory visualization utility
 ├── index.html                   # Root HTTP redirect to /3d/
 ├── requirements.txt             # Python dependencies
+├── LICENSE                      # MIT License
 └── README.md                    # Project documentation
 ```
 
@@ -101,24 +92,43 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 2. Launching the Local Simulation
+### 2. Running the Simulation & Agent
 
-Start a local HTTP server:
-
+#### Terminal 1 — Host the 3D Web Environment:
 ```bash
-# Start server on port 8080 bound to localhost
-python3 -m http.server 8080 --bind 127.0.0.1
+# Host the simulation on port 8080
+python3 -m http.server 8080
 ```
 
-Open your browser and navigate to:
-```
-http://127.0.0.1:8080/3d/
+#### Terminal 2 — Start the Autonomous Agent:
+```bash
+# Start the WebSocket agent driver (default intent: "take right")
+.venv/bin/python agent.py
+
+# Or start with a specific initial command:
+.venv/bin/python agent.py --intent "take left"
 ```
 
-- Click **Autonomous** in the top navigation bar.
-- The pre-trained `model.onnx` policy will load automatically and pilot the car through the roundabout and S-curves, coming to a clean stop inside the parking garage!
+#### In Your Browser:
+Open **[http://localhost:8080/3d/](http://localhost:8080/3d/)** and click **🤖 Autonomous** mode.
 
-### 3. Keyboard Controls (Manual Mode)
+---
+
+## 💬 Using Language Intent Commands
+
+When in **Autonomous Mode**, use the **💬 LANGUAGE INTENT** control panel on the right HUD:
+
+1. **Text Input Bar:** Type natural commands like:
+   - `"take left"`, `"turn left"`, `"go left"` $\to$ parses to **TAKE LEFT** (Token ID: `0`)
+   - `"take right"`, `"turn right"`, `"go right"` $\to$ parses to **TAKE RIGHT** (Token ID: `1`)
+   - Press <kbd>Enter</kbd> or click **Send**.
+2. **Quick Chips:** Click `↰ take left` or `↱ take right` for instant one-click switching.
+3. **Keyboard Hotkeys:** Press <kbd>1</kbd> for left and <kbd>2</kbd> for right during live driving.
+4. **Live Feedback:** Both the browser HUD and the Python `agent.py` terminal display instant acknowledgment and update the active intent token.
+
+---
+
+## 🎮 Keyboard Controls (Manual Mode)
 
 | Key | Action |
 | :--- | :--- |
@@ -126,44 +136,24 @@ http://127.0.0.1:8080/3d/
 | `S` / `Down Arrow` | Brake / Reverse |
 | `A` / `Left Arrow` | Steer Left |
 | `D` / `Right Arrow` | Steer Right |
+| `1` | Set Language Intent to **Take Left** |
+| `2` | Set Language Intent to **Take Right** |
 | `C` | Toggle Camera (Chase View $\leftrightarrow$ Helicopter View) |
 | `R` | Reset Car to South Start Line |
+| `Space` | Toggle Manual Recording / Toggle Autonomous Drive |
 
 ---
 
-## 🧠 Training & Data Pipeline
+## 📊 Dataset & Trajectory Analysis
 
-### Step 1: Collect DAgger Demonstrations
+The dataset in `dataset_dagger.pt` contains **14,050 transitions** captured from balanced DAgger rollouts:
+- **Left Roundabout Branch:** Clockwise ingress around the roundabout island.
+- **Right Roundabout Branch:** Counter-clockwise ingress around the roundabout island.
+- **Perturbation Recovery:** Scheduled off-road grass drift bursts that capture dense recovery demonstrations back to the road centerline.
 
-Collect fresh trajectories with balanced roundabout routing, Ornstein-Uhlenbeck noise, and grass recovery:
-
+To visualize recorded episodes and trajectory coverage:
 ```bash
-python collect_dagger.py --episodes 50 --output dataset_dagger.pt
-```
-
-**Key collection options:**
-- `--episodes`: Number of complete trajectory episodes (default: 50).
-- `--frame-stride`: Observation sampling stride (default: 4, giving 5 Hz vision).
-- `--noise-steer`: Steering noise volatility $\sigma$ (default: 0.35).
-- `--no-grass-bursts`: Disable high-CTE perturbation bursts.
-
-### Step 2: Train the Vision Policy
-
-Train the convolutional policy on your collected dataset:
-
-```bash
-python train_policy.py --dataset dataset_dagger.pt --epochs 15 --batch-size 64 --output 3d/model.onnx
-```
-
-- Automatic hardware detection uses **Apple Silicon (MPS)** or **CUDA** if available.
-- Model automatically exports the best validation checkpoint to `3d/model.onnx`.
-
-### Step 3: Visualize Trajectories
-
-Generate high-resolution plots of recorded episodes and recovery maneuvers:
-
-```bash
-python plot_trajectories.py --dataset dataset_dagger.pt --output assets/episode_paths_plot.png
+.venv/bin/python plot_trajectories.py --dataset dataset_dagger.pt --output episode_paths_plot.png
 ```
 
 ---
@@ -176,23 +166,10 @@ $$\dot{x} = -v \sin(\theta)$$
 $$\dot{z} = -v \cos(\theta)$$
 $$\dot{\theta} = \frac{v}{L} \tan(\delta)$$
 
-- **Surface Friction:** Dynamic ground deceleration ($12.0\text{ m/s}^2$ on tarmac vs. $24.0\text{ m/s}^2$ off-road).
+- **Multi-Surface Friction:** Dynamic ground deceleration ($12.0\text{ m/s}^2$ on tarmac vs. $24.0\text{ m/s}^2$ off-road).
 - **Steering Wheel Lag:** Front wheel steer angle transitions smoothly via rate-limited exponential lag:
   $$\delta_{t+1} = \delta_t + (\delta_{\text{target}} - \delta_t) \cdot 12.0 \cdot \Delta t$$
-- **Actuation EMA Filtering:** In-browser inference applies low-pass action filtering to smooth WASM frame latency jitter:
-  $$u_{\text{applied}} = 0.70 \cdot u_{\text{model}} + 0.30 \cdot u_{\text{prev}}$$
-
----
-
-## 📈 Quantitative Performance
-
-| Metric | Baseline Policy | DAgger + Latency Compensated Policy |
-| :--- | :--- | :--- |
-| **Validation Loss** | $0.1506$ | **$0.0943$** |
-| **Open-Road Throttle Floor** | $-0.70$ (braking) | $\ge 0.25$ (forward cruise) |
-| **Track Centerline Adherence** | Frequent curb strikes | **100% on-road (0 offroad excursions)** |
-| **Cruise Speed Regulation** | 35 m/s runaway drift | **13.6 m/s steady state cruise** |
-| **Mission Completion** | Timed out / Stalled | **🏆 100% Successful Garage Arrival (21s)** |
+- **Continuous Zero-Jerk Cruise Governor:** Actuator envelope regulation in `agent.py` tapers throttle smoothly between $11.5\text{ m/s}$ and $13.5\text{ m/s}$, maintaining smooth cruising without mode-collapse stalling.
 
 ---
 

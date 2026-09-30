@@ -201,10 +201,18 @@ class Car3D {
         // Car3D heading: left is positive turn, right is negative turn
         targetSteer = -autoSteering * 0.45;
 
-        if (autoThrottle > 0.05) {
-          isGas = true;
-          this.speed += this.acceleration * autoThrottle * dt;
-        } else if (autoThrottle < -0.05) {
+        if (autoThrottle >= 0) {
+          // Continuous traction & drag balance — eliminates the 0.05 binary deadband cliff
+          // autoThrottle=0.00 -> smooth coast friction (-activeFriction)
+          // autoThrottle=0.25 -> net acceleration = 0 (stable cruise matching dataset)
+          // autoThrottle=1.00 -> full launch acceleration (+24 m/s²)
+          isGas = (autoThrottle > 0.01);
+          const driveAccel = this.acceleration * autoThrottle;
+          const dragFactor = Math.min(1.0, Math.abs(this.speed) / 8.0) * Math.max(0.0, 1.0 - autoThrottle / 0.5);
+          const netAccel = driveAccel - (activeFriction * dragFactor);
+          this.speed += netAccel * dt;
+        } else {
+          // Continuous progressive braking
           isBrake = true;
           const brakeAmt = Math.abs(autoThrottle);
           if (keys.allowReverse && this.speed <= 0.5) {
@@ -212,7 +220,7 @@ class Car3D {
             // throttle brakes to rest, so holding a parking brake cannot reverse.
             this.speed -= (this.acceleration * 0.6) * brakeAmt * dt;
           } else {
-            const change = this.braking * brakeAmt * dt;
+            const change = (this.braking * brakeAmt + activeFriction) * dt;
             this.speed = Math.sign(this.speed) * Math.max(0, Math.abs(this.speed) - change);
           }
         }
@@ -254,8 +262,8 @@ class Car3D {
     // Dynamic brake light glow
     this.taillightMat.emissiveIntensity = isBrake ? 2.5 : 0.6;
 
-    // Natural friction drag
-    if (!isGas && !isBrake) {
+    // Natural friction drag for manual keyboard mode when coasting
+    if (!keys.isAuto && !isGas && !isBrake) {
       if (this.speed > 0) {
         this.speed = Math.max(0, this.speed - activeFriction * dt);
       } else if (this.speed < 0) {
@@ -274,11 +282,16 @@ class Car3D {
       fw.rotation.y = this.steerAngle;
     }
 
-    // Car heading turns proportionally to speed direction
+    // Car heading turns proportionally to speed direction with smooth yaw damping
     if (Math.abs(this.speed) > 0.2) {
       const speedFactor = Math.min(1.0, Math.abs(this.speed) / 10.0);
       const direction = this.speed > 0 ? 1 : -1;
-      this.heading += this.steerAngle * this.turnSpeed * speedFactor * direction * dt;
+      const targetYawRate = this.steerAngle * this.turnSpeed * speedFactor * direction;
+      this.yawRate = (this.yawRate !== undefined) ? this.yawRate : 0.0;
+      this.yawRate += (targetYawRate - this.yawRate) * 14.0 * dt;
+      this.heading += this.yawRate * dt;
+    } else {
+      this.yawRate = 0.0;
     }
 
     // 4. Integrate Position

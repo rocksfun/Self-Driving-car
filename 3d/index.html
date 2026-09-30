@@ -140,26 +140,45 @@
       </div>
 
       <div class="autonomous-content">
-        <!-- Agent Backend Toggle: Standalone Python Driver vs Local Browser WASM -->
-        <div class="agent-toggle-bar">
-          <button id="btn-mode-python-agent" class="agent-mode-btn active" title="Use decoupled Python Driver (agent.py)">
-            🐍 Python Agent (agent.py)
-          </button>
-          <button id="btn-mode-wasm-agent" class="agent-mode-btn" title="Use local In-Browser ONNX WASM">
-            ⚡ Browser Model
-          </button>
-        </div>
-
-        <!-- Active Model Banner -->
+        <!-- Autonomous Agent Connection Status Banner -->
         <div class="model-status-box">
           <div class="model-status-left">
-            <span class="model-status-icon" id="auto-model-icon">🧠</span>
+            <span class="model-status-icon" id="auto-model-icon">🏎️</span>
             <div class="model-status-info">
-              <div class="model-status-name" id="auto-model-name">Vision Transformer (ViT-GRU-ACT)</div>
-              <div class="model-status-desc" id="auto-model-desc">PyTorch ViT + ACT + GRU Memory (64×64 RGB)</div>
+              <div class="model-status-name" id="auto-model-name">Python Driver (agent.py)</div>
+              <div class="model-status-desc" id="auto-model-desc">Connecting to ws://localhost:8765...</div>
             </div>
           </div>
           <button id="btn-auto-change-model" class="mini-change-btn" title="Choose or switch model">Change</button>
+        </div>
+
+        <!-- Language Intent Command Center (VLA Mode) -->
+        <div class="intent-command-box" id="intent-command-box">
+          <div class="intent-header">
+            <div class="intent-header-left">
+              <span class="intent-icon">💬</span>
+              <span class="intent-label">LANGUAGE INTENT</span>
+            </div>
+            <span id="badge-active-intent" class="badge-intent-active intent-badge-right">👉 TAKE RIGHT</span>
+          </div>
+
+          <!-- Command Bar Text Input -->
+          <div class="intent-input-row">
+            <div class="intent-input-wrapper">
+              <span class="intent-prompt-sym">❯</span>
+              <input type="text" id="input-language-intent" class="intent-text-input" placeholder='Command the AI: "take left", "take right"...' autocomplete="off" spellcheck="false" />
+            </div>
+            <button id="btn-submit-intent" class="intent-send-btn" title="Send Intent Command (Enter)">
+              Send
+            </button>
+          </div>
+
+          <!-- Quick Suggestion Chips -->
+          <div class="intent-chips-row">
+            <button type="button" class="intent-chip" id="chip-intent-left" data-intent="take left">↰ take left</button>
+            <button type="button" class="intent-chip active" id="chip-intent-right" data-intent="take right">↱ take right</button>
+          </div>
+          <div id="intent-feedback" class="intent-feedback-text">Ready for instructions. Type or click a command.</div>
         </div>
 
         <!-- PRIMARY HERO START / PAUSE DRIVING BUTTON -->
@@ -242,7 +261,7 @@
   <div id="model-modal" class="modal-overlay hidden">
     <div class="modal-card">
       <div class="modal-header">
-        <div class="modal-title">📦 Choose Model to Load</div>
+        <div class="modal-title">📦 Choose Policy Model to Load</div>
         <button id="btn-close-modal" class="modal-close-btn">&times;</button>
       </div>
       <div class="modal-body">
@@ -250,9 +269,9 @@
           <div class="opt-icon">⚡</div>
           <div class="opt-info">
             <div class="opt-title">Action Chunking Policy (10-Step ACT)</div>
-            <div class="opt-desc">K=10 trajectory chunking with zero-jerk temporal ensembling</div>
+            <div class="opt-desc">K=10 trajectory chunking with temporal ensembling (model_act.onnx)</div>
           </div>
-          <button class="opt-btn">Load</button>
+          <button class="opt-btn" id="btn-opt-load-act">Load</button>
         </div>
 
         <div class="model-option" id="opt-load-onnx">
@@ -261,16 +280,16 @@
             <div class="opt-title">Baseline Vision CNN (model.onnx)</div>
             <div class="opt-desc">Single-step feedforward policy with EMA smoothing</div>
           </div>
-          <button class="opt-btn">Load</button>
+          <button class="opt-btn" id="btn-opt-load-onnx">Load</button>
         </div>
 
         <div class="model-option" id="opt-load-custom">
           <div class="opt-icon">📂</div>
           <div class="opt-info">
             <div class="opt-title">Upload Custom Model (.onnx)...</div>
-            <div class="opt-desc">Select any custom .onnx model from your machine</div>
+            <div class="opt-desc">Send any custom .onnx model to agent.py</div>
           </div>
-          <button class="opt-btn">Browse</button>
+          <button class="opt-btn" id="btn-opt-load-custom">Browse</button>
           <input type="file" id="input-model-file" accept=".onnx" style="display: none;" />
         </div>
       </div>
@@ -279,9 +298,6 @@
 
   <!-- Floating Toast Notification Overlay -->
   <div id="toast-overlay" class="toast-overlay">Welcome to NeuroDrive 3D!</div>
-
-  <!-- ONNX Runtime Web for Browser AI Inference -->
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
 
   <!-- Three.js Library via CDN -->
   <script src="vendor/three.r128.min.js"></script>
@@ -292,6 +308,6 @@
   <script src="js/car3d.js?v=10"></script>
   <script src="js/oracle3d.js?v=3"></script>
   <script src="js/collection_bridge.js?v=2"></script>
-  <script src="js/app3d.js?v=11"></script>
+  <script src="js/app3d.js?v=13"></script>
 </body>
 </html>
